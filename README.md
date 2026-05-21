@@ -4,7 +4,7 @@ Virtual Swarm Drone Coordination is an interactive React and TypeScript simulati
 
 The project is designed as a small swarm coordination lab rather than a simple visual flocking sketch. Each drone behaves as an autonomous local agent, while a leader drone can analyze telemetry, issue high-level mission commands, and optionally use a Groq-hosted model as the strategic planner.
 
-Live simulation: [https://sayon999-d.github.io/Virtual-Swarm-Drone-Coordination/](https://sayon999-d.github.io/Virtual-Swarm-Drone-Coordination/)
+Live simulation: https://sayon999-d.github.io/Virtual-Swarm-Drone-Coordination-System/
 
 Important deployment note:
 
@@ -19,31 +19,24 @@ The main differences are:
 1. Leader-worker architecture
 
    One drone is treated as the leader. It receives reports from the worker drones, analyzes the swarm state, and broadcasts a strategic command back to the swarm.
-
 2. Groq-first strategic planning
 
    The leader can ask a Groq model to choose a mission-level command. The model is not responsible for frame-by-frame movement. It only decides strategy.
-
 3. Local fallback planner
 
    If Groq is not configured, rate-limited, offline, or unavailable, the local planner continues issuing safe commands so the simulation does not freeze.
-
 4. Visible agent communication
 
    The Leader panel shows what the worker drones are trying to communicate: status reports, low energy warnings, hazard alerts, and distress messages.
-
 5. Formation stability logic
 
    Structured formations use safe spacing, slot assignment, braking near assigned slots, separation pressure, and overlap recovery. Drones do not simply teleport into perfect positions.
-
 6. Hazard-aware decisions
 
    Obstacles affect movement, energy, health, and command decisions. Hazards are part of the simulation state, not only visual decoration.
-
 7. Scalable local perception
 
    Drones use a spatial grid to query local neighbors instead of comparing against every other drone every frame.
-
 8. Hybrid AI control loop
 
    The model decides high-level intent. The simulation engine handles local physics, collisions, routing pressure, and formation stabilization.
@@ -127,12 +120,12 @@ This separation lets the swarm remain responsive without asking the AI model for
 
 The leader can issue one of five high-level commands:
 
-| Command | Meaning |
-| --- | --- |
-| `HOLD_FORMATION` | Keep the current formation stable |
-| `REGROUP` | Pull the swarm closer together |
-| `EXPAND_SEARCH` | Let scouts widen coverage |
-| `AVOID_HAZARDS` | Prioritize obstacle avoidance and safe spacing |
+| Command             | Meaning                                                |
+| ------------------- | ------------------------------------------------------ |
+| `HOLD_FORMATION`  | Keep the current formation stable                      |
+| `REGROUP`         | Pull the swarm closer together                         |
+| `EXPAND_SEARCH`   | Let scouts widen coverage                              |
+| `AVOID_HAZARDS`   | Prioritize obstacle avoidance and safe spacing         |
 | `CONSERVE_ENERGY` | Reduce wasteful movement and protect low-energy drones |
 
 The leader command affects the simulation by adjusting local steering pressure, target pressure, cohesion, separation, and hazard avoidance.
@@ -215,7 +208,6 @@ If you want Groq to work in a hosted production version, use one of these option
    - Azure Static Web Apps
    - Render
    - Fly.io
-
 2. Keep GitHub Pages for the frontend and deploy a separate backend proxy
 
    The frontend calls your backend:
@@ -223,7 +215,6 @@ If you want Groq to work in a hosted production version, use one of these option
    ```text
    GitHub Pages frontend -> secure backend proxy -> Groq API
    ```
-
 3. Use local fallback only on GitHub Pages
 
    This keeps the public demo safe and functional without any private API key.
@@ -236,13 +227,13 @@ The Leader panel includes a communication feed that shows what the worker drones
 
 Message types include:
 
-| Message | Meaning |
-| --- | --- |
-| `STATUS_REPORT` | Routine worker telemetry |
-| `LOW_ENERGY` | Drone asks for energy-aware routing |
-| `DISTRESS` | Drone reports low health |
-| `HAZARD_DETECTED` | Drone warns about nearby danger |
-| `LEADER_COMMAND` | Command broadcast through the message system |
+| Message             | Meaning                                      |
+| ------------------- | -------------------------------------------- |
+| `STATUS_REPORT`   | Routine worker telemetry                     |
+| `LOW_ENERGY`      | Drone asks for energy-aware routing          |
+| `DISTRESS`        | Drone reports low health                     |
+| `HAZARD_DETECTED` | Drone warns about nearby danger              |
+| `LEADER_COMMAND`  | Command broadcast through the message system |
 
 The feed is useful because it makes the coordination loop visible:
 
@@ -257,12 +248,12 @@ swarm reacts
 
 Each drone has a profile that changes its movement and decision behavior.
 
-| Role | Purpose | Behavior |
-| --- | --- | --- |
-| `Scout` | Explore and detect hazards | Faster, wider perception, more energy use |
-| `Defender` | Stabilize and protect | Slower, stronger separation, higher health |
-| `Worker` | Hold structure | Efficient, formation-focused, low wander |
-| `Relay` | Improve coordination | Stronger response to communication signals |
+| Role         | Purpose                    | Behavior                                   |
+| ------------ | -------------------------- | ------------------------------------------ |
+| `Scout`    | Explore and detect hazards | Faster, wider perception, more energy use  |
+| `Defender` | Stabilize and protect      | Slower, stronger separation, higher health |
+| `Worker`   | Hold structure             | Efficient, formation-focused, low wander   |
+| `Relay`    | Improve coordination       | Stronger response to communication signals |
 
 The leader drone is assigned as a `Relay`, which fits the command-and-communication role.
 
@@ -270,39 +261,34 @@ The leader drone is assigned as a `Relay`, which fits the command-and-communicat
 
 The simulation supports multiple formations:
 
-| Formation | Purpose |
-| --- | --- |
-| `Scatter` | Loose independent motion |
-| `Flock` | Classic flocking behavior |
-| `Grid` | Structured slot-based arrangement |
-| `V-Shape` | Leader-forward formation |
-| `Circle` | Ring formation around the center |
-| `Leader` | Line behind a lead direction |
-| `Hexagon` | Compact multi-layer packing |
-| `Cross` | Diagonal branch formation |
+| Formation   | Purpose                           |
+| ----------- | --------------------------------- |
+| `Scatter` | Loose independent motion          |
+| `Flock`   | Classic flocking behavior         |
+| `Grid`    | Structured slot-based arrangement |
+| `V-Shape` | Leader-forward formation          |
+| `Circle`  | Ring formation around the center  |
+| `Leader`  | Line behind a lead direction      |
+| `Hexagon` | Compact multi-layer packing       |
+| `Cross`   | Diagonal branch formation         |
 
 Formation stability uses several mechanisms:
 
 1. Safe minimum spacing
 
    The spacing floor is high enough to avoid drones fighting the near-collision zone while they are technically in formation.
-
 2. Nearest-slot assignment
 
    Formation slots are assigned to nearby drones rather than by raw array index.
-
 3. Velocity damping on reassignment
 
    When a new formation is chosen, drones reduce velocity so they do not rush through neighboring slots.
-
 4. Near-slot braking
 
    Drones slow down as they approach their assigned positions.
-
 5. Overlap resolution
 
    If drones still overlap after movement, the simulation separates them and reduces sticking.
-
 6. Separation pressure
 
    Formation mode increases separation so drones preserve physical space.
@@ -313,14 +299,14 @@ These mechanisms make formations more stable while still keeping the motion visi
 
 Every drone computes steering from several forces:
 
-| Force | Description |
-| --- | --- |
-| Separation | Avoid nearby drones |
-| Alignment | Match nearby heading |
-| Cohesion | Stay connected to local group |
-| Formation Target | Move toward assigned formation slot |
-| Obstacle Avoidance | Repel from hazards and blocks |
-| Wander | Add controlled randomness |
+| Force                  | Description                                 |
+| ---------------------- | ------------------------------------------- |
+| Separation             | Avoid nearby drones                         |
+| Alignment              | Match nearby heading                        |
+| Cohesion               | Stay connected to local group               |
+| Formation Target       | Move toward assigned formation slot         |
+| Obstacle Avoidance     | Repel from hazards and blocks               |
+| Wander                 | Add controlled randomness                   |
 | Communication Response | React to drone messages and leader commands |
 
 The simulation integrates these forces into acceleration, velocity, position, rotation, pitch, and roll.
@@ -329,12 +315,12 @@ The simulation integrates these forces into acceleration, velocity, position, ro
 
 The environment includes:
 
-| Hazard | Effect |
-| --- | --- |
-| `circle` | Basic radial keep-out pillar |
-| `rect` | Box-shaped obstacle |
+| Hazard               | Effect                                   |
+| -------------------- | ---------------------------------------- |
+| `circle`           | Basic radial keep-out pillar             |
+| `rect`             | Box-shaped obstacle                      |
 | `electrical_storm` | Damages health and destabilizes movement |
-| `magnetic_field` | Drains energy and slows drones |
+| `magnetic_field`   | Drains energy and slows drones           |
 
 Hazards influence:
 
@@ -372,12 +358,12 @@ The dashboard acts as the operator console.
 
 Main areas:
 
-| Panel | Purpose |
-| --- | --- |
-| Config | Formation, spacing, swarm size, autopilot, trails, hazards |
-| Leader | Groq/local brain status, leader command, worker messages |
-| Logs | Collision and incident feed |
-| Inspect | Per-drone telemetry and health details |
+| Panel   | Purpose                                                    |
+| ------- | ---------------------------------------------------------- |
+| Config  | Formation, spacing, swarm size, autopilot, trails, hazards |
+| Leader  | Groq/local brain status, leader command, worker messages   |
+| Logs    | Collision and incident feed                                |
+| Inspect | Per-drone telemetry and health details                     |
 
 The canvas supports:
 
@@ -522,13 +508,11 @@ The workflow has three logical stages:
    - dependency installation
    - TypeScript check
    - production build
-
 2. `build`
 
    Runs only outside pull requests.
 
    It builds the static Pages artifact.
-
 3. `deploy`
 
    Runs only outside pull requests.
