@@ -1,0 +1,337 @@
+import { Vector2 } from '../utils/Vector2';
+import { DroneState } from '../spatial_index/SpatialGrid';
+import { SwarmConfig } from '../control/SwarmConfig';
+import { Environment } from '../environment/Environment';
+
+export class InternalAgent {
+  private wanderAngle: number = Math.random() * Math.PI * 2;
+  
+  decide(
+    currentState: DroneState,
+    neighbors: DroneState[],
+    environment: Environment,
+    config: SwarmConfig,
+    target: Vector2 | null
+  ): Vector2 {
+    const profile = currentState.behaviorProfile || 'Worker';
+    const pMult = currentState.perceptionMult || 1.0;
+    
+    let separation = this.computeSeparation(currentState, neighbors, config.separationRadius, config.maxSpeed);
+    let alignment = this.computeAlignment(currentState, neighbors, config.alignmentRadius, config.maxSpeed);
+    let cohesion = this.computeCohesion(currentState, neighbors, config.cohesionRadius, config.maxSpeed);
+    let obstacleAvoidance = this.computeObstacleAvoidance(currentState, environment, config.maxSpeed, pMult);
+    let formationTarget = this.computeFormationTarget(currentState, target, config.maxSpeed);
+    let wander = this.computeWander(currentState);
+    let communication = this.computeCommunication(currentState, neighbors, config.maxSpeed, profile);
+    let weights = {
+      separation: config.separationWeight,
+      alignment: config.alignmentWeight,
+      cohesion: config.cohesionWeight,
+      obstacle: config.obstacleWeight,
+      target: config.targetWeight,
+      wander: config.wanderWeight || 0.2,
+      comm: 1.5
+    };
+
+    switch (profile) {
+      case 'Scout':
+        weights.wander *= 2.5; // Scouts explore more
+        weights.comm *= 0.5;   // Scouts focus on exploration over helping
+        weights.obstacle *= 1.5; // Scouts are more careful around obstacles
+        break;
+      case 'Defender':
+        weights.separation *= 1.4; // Stronger local territory
+        weights.cohesion *= 1.2;   // Stays closer to the group
+        weights.target *= 0.8;      // Prioritizes protection over target
+        break;
+      case 'Worker':
+        weights.target *= 1.4; // Workers are focused on formations
+        weights.wander *= 0.2; // Very little random movement
+        break;
+      case 'Relay':
+        weights.comm *= 3.0;     // Relays react heaving to communication
+        weights.alignment *= 1.5; // Better group synchronization
+        break;
+    }
+    weights.separation *= currentState.localSeparationMult || 1.0;
+    weights.cohesion *= currentState.localCohesionMult || 1.0;
+    weights.target *= currentState.localTargetMult || 1.0;
+
+    separation = separation.mult(weights.separation);
+    alignment = alignment.mult(weights.alignment);
+    cohesion = cohesion.mult(weights.cohesion);
+    obstacleAvoidance = obstacleAvoidance.mult(weights.obstacle);
+    formationTarget = formationTarget.mult(weights.target);
+    wander = wander.mult(weights.wander);
+    communication = communication.mult(weights.comm);
+
+    let acceleration = new Vector2(0, 0);
+    
+    const fMult = profile === 'Defender' ? 1.5 : profile === 'Scout' ? 1.2 : profile === 'Worker' ? 0.8 : 1.0;
+    const currentMaxForce = config.maxForce * fMult;
+    let softForces = new Vector2(0, 0);
+    softForces = softForces.add(alignment);
+    softForces = softForces.add(cohesion);
+    softForces = softForces.add(formationTarget);
+    softForces = softForces.add(wander);
+    softForces = softForces.add(communication);
+    
+    softForces = softForces.limit(currentMaxForce);
+    acceleration = acceleration.add(softForces);
+    acceleration = acceleration.add(separation);
+    acceleration = acceleration.add(obstacleAvoidance);
+    if (target && currentState.targetOffset) {
+      const targetPos = target.add(currentState.targetOffset);
+      const distToTarget = currentState.position.distance(targetPos);
+      if (distToTarget < 42) {
+        const brakeStrength = profile === 'Scout' ? 0.55 : profile === 'Defender' ? 0.75 : 0.95;
+        const braking = currentState.velocity.mult(-brakeStrength);
+        acceleration = acceleration.add(braking);
+      }
+    }
+    return acceleration.limit(currentMaxForce * 20);
+  }
+
+  private computeCommunication(state: DroneState, neighbors: DroneState[], maxSpeed: number, profile: string): Vector2 {
+    let steer = new Vector2(0, 0);
+    let distressCount = 0;
+    let distressCenter = new Vector2(0, 0);
+    let leaderCommandCenter = new Vector2(0, 0);
+    let leaderCommandCount = 0;
+
+    for (const neighbor of neighbors) {
+      if (neighbor.messages && neighbor.messages.length > 0) {
+        for (const msg of neighbor.messages) {
+          if (msg.type === 'DISTRESS') {
+            let importance = 1.0;
+            if (profile === 'Relay') importance = 2.5;
+            if (profile === 'Defender') importance = 1.8;
+            
+            distressCenter = distressCenter.add(neighbor.position.mult(importance));
+            distressCount += importance;
+          } else if (msg.type === 'LOW_ENERGY') {
+            let careFactor = 1.0;
+            if (profile === 'Defender') careFactor = 1.8;
+            if (profile === 'Worker') careFactor = 1.4;
+            if (profile === 'Scout') careFactor = 0.2; // Scouts don't stop for slow units
+            steer = steer.add(state.velocity.mult(-0.08 * careFactor));
+          } else if (msg.type === 'HAZARD_DETECTED' && msg.position) {
+            let reactRadius = profile === 'Scout' ? 180 : profile === 'Defender' ? 120 : 100;
+            let fearMultiplier = profile === 'Scout' ? 2.5 : 1.0;
+            
+            const d = state.position.distance(msg.position);
+            if (d > 0 && d < reactRadius) {
+              let diff = state.position.sub(msg.position).normalize();
+              const force = (reactRadius / d) * fearMultiplier;
+              steer = steer.add(diff.mult(force));
+            }
+          } else if (msg.type === 'LEADER_COMMAND') {
+            if (msg.value === 'REGROUP' || msg.value === 'CONSERVE_ENERGY') {
+              leaderCommandCenter = leaderCommandCenter.add(neighbor.position);
+              leaderCommandCount++;
+            } else if (msg.value === 'AVOID_HAZARDS') {
+              steer = steer.add(state.position.sub(neighbor.position).normalize().mult(0.4));
+            } else if (msg.value === 'EXPAND_SEARCH' && profile === 'Scout') {
+              const lateral = new Vector2(-state.velocity.y, state.velocity.x);
+              steer = steer.add(lateral.normalize().mult(0.6));
+            }
+          }
+        }
+      }
+    }
+
+    if (distressCount > 0) {
+      distressCenter = distressCenter.div(distressCount);
+      let desired = distressCenter.sub(state.position);
+      if (desired.magSq() > 0) {
+        desired = desired.normalize().mult(maxSpeed);
+      steer = steer.add(desired.sub(state.velocity));
+      }
+    }
+
+    if (leaderCommandCount > 0) {
+      leaderCommandCenter = leaderCommandCenter.div(leaderCommandCount);
+      let desired = leaderCommandCenter.sub(state.position);
+      if (desired.magSq() > 0) {
+        desired = desired.normalize().mult(maxSpeed * 0.8);
+        steer = steer.add(desired.sub(state.velocity).mult(0.45));
+      }
+    }
+
+    if (steer.magSq() > 0) {
+      steer = steer.limit(maxSpeed);
+    }
+    return steer;
+  }
+
+  private computeWander(state: DroneState): Vector2 {
+    const circleRadius = 2;
+    const circleDistance = 5;
+    const change = 0.5;
+    
+    this.wanderAngle += (Math.random() * 2 - 1) * change;
+    
+    let circleCenter = state.velocity.copy();
+    if (circleCenter.magSq() === 0) {
+      circleCenter = new Vector2(1, 0);
+    }
+    circleCenter = circleCenter.normalize().mult(circleDistance);
+    
+    const displacement = new Vector2(Math.cos(this.wanderAngle), Math.sin(this.wanderAngle)).mult(circleRadius);
+    
+    let steer = circleCenter.add(displacement);
+    if (steer.magSq() > 0) {
+      steer = steer.normalize();
+    }
+    return steer;
+  }
+
+  private computeSeparation(state: DroneState, neighbors: DroneState[], separationRadius: number, maxSpeed: number): Vector2 {
+    let steer = new Vector2(0, 0);
+    let count = 0;
+
+    for (const neighbor of neighbors) {
+      const d = state.position.distance(neighbor.position);
+      if (d > 0 && d < separationRadius) {
+        let diff = state.position.sub(neighbor.position);
+        diff = diff.normalize();
+        let force = 2000 / (d * d);
+        if (d < 5) {
+          force *= (15 / Math.max(0.1, d));
+        }
+        force = Math.min(500, force); // Increased cap for critical avoidance
+        const jitter = new Vector2((Math.random() - 0.5) * 0.1, (Math.random() - 0.5) * 0.1);
+        diff = diff.add(jitter).normalize().mult(force);
+        
+        steer = steer.add(diff);
+        count++;
+        const relativeVel = neighbor.velocity.sub(state.velocity);
+        const closingSpeed = relativeVel.dot(diff);
+        
+        if (closingSpeed > 0) {
+          const timeToCollision = d / closingSpeed;
+          if (timeToCollision < 2.5) {
+            const evasiveMultiplier = Math.min(50, 5 / Math.max(0.1, timeToCollision));
+            steer = steer.add(diff.mult(closingSpeed * evasiveMultiplier));
+          }
+        }
+      }
+    }
+
+    if (count > 0) {
+      steer = steer.div(count);
+    }
+    if (steer.magSq() > 0) {
+      steer = steer.limit(maxSpeed * 4); // Increased limit so it can overpower target attraction
+    }
+    return steer;
+  }
+
+  private computeAlignment(state: DroneState, neighbors: DroneState[], radius: number, maxSpeed: number): Vector2 {
+    let sum = new Vector2(0, 0);
+    let count = 0;
+
+    for (const neighbor of neighbors) {
+      const d = state.position.distanceSq(neighbor.position);
+      if (d > 0 && d < radius * radius) {
+        sum = sum.add(neighbor.velocity);
+        count++;
+      }
+    }
+
+    if (count > 0) {
+      sum = sum.div(count);
+      if (sum.magSq() > 0) {
+          sum = sum.normalize().mult(maxSpeed);
+      }
+      let steer = sum.sub(state.velocity);
+      return steer;
+    }
+    return new Vector2(0, 0);
+  }
+
+  private computeCohesion(state: DroneState, neighbors: DroneState[], radius: number, maxSpeed: number): Vector2 {
+    let sum = new Vector2(0, 0);
+    let count = 0;
+
+    for (const neighbor of neighbors) {
+      const d = state.position.distanceSq(neighbor.position);
+      if (d > 0 && d < radius * radius) {
+        sum = sum.add(neighbor.position);
+        count++;
+      }
+    }
+
+    if (count > 0) {
+      sum = sum.div(count);
+      return this.seek(state, sum, maxSpeed);
+    }
+    return new Vector2(0, 0);
+  }
+
+  private computeObstacleAvoidance(state: DroneState, environment: Environment, maxSpeed: number, pMult: number = 1.0): Vector2 {
+    let steer = new Vector2(0, 0);
+    for (const obs of environment.obstacles) {
+      let closestPoint = new Vector2(0, 0);
+      let avoidRadius = 0;
+
+      if (obs.type === 'circle' || obs.type === 'electrical_storm' || obs.type === 'magnetic_field') {
+        closestPoint = obs.position;
+        const buffer = (obs.type === 'electrical_storm' || obs.type === 'magnetic_field') ? 80 : 40;
+        avoidRadius = (obs.radius + state.radius + buffer) * pMult;
+      } else if (obs.type === 'rect') {
+        const hw = (obs.width || 50) / 2;
+        const hh = (obs.height || 50) / 2;
+        const cx = Math.max(obs.position.x - hw, Math.min(state.position.x, obs.position.x + hw));
+        const cy = Math.max(obs.position.y - hh, Math.min(state.position.y, obs.position.y + hh));
+        closestPoint = new Vector2(cx, cy);
+        avoidRadius = (state.radius + 40) * pMult; // increased buffer
+      }
+
+      const d = state.position.distance(closestPoint);
+      if (d > 0 && d < avoidRadius) {
+        let diff = state.position.sub(closestPoint);
+        diff = diff.normalize();
+        const force = Math.min(100, 1000 / (d * d));
+        diff = diff.mult(force);
+        steer = steer.add(diff);
+      }
+    }
+
+    if (steer.magSq() > 0) {
+      steer = steer.limit(maxSpeed * 2);
+    }
+    return steer;
+  }
+
+  private computeFormationTarget(state: DroneState, target: Vector2 | null, maxSpeed: number): Vector2 {
+    if (!target) return new Vector2(0, 0);
+    const finalTarget = state.targetOffset ? target.add(state.targetOffset) : target;
+    return this.arrive(state, finalTarget, maxSpeed);
+  }
+
+  private seek(state: DroneState, target: Vector2, maxSpeed: number): Vector2 {
+    let desired = target.sub(state.position);
+    if (desired.magSq() > 0) {
+        desired = desired.normalize().mult(maxSpeed);
+    }
+    let steer = desired.sub(state.velocity);
+    return steer;
+  }
+
+  private arrive(state: DroneState, target: Vector2, maxSpeed: number): Vector2 {
+    let desired = target.sub(state.position);
+    let d = desired.mag();
+    if (d > 0) {
+        desired = desired.normalize();
+        if (d < 100) {
+            desired = desired.mult(maxSpeed * (d / 100));
+        } else {
+            desired = desired.mult(maxSpeed);
+        }
+        let steer = desired.sub(state.velocity);
+        return steer;
+    }
+    return new Vector2(0, 0);
+  }
+}
